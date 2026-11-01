@@ -1,0 +1,11 @@
+Model Information:
+* title:	rope bridge
+* source:	https://sketchfab.com/3d-models/rope-bridge-a9d56576339a4f31bfb429bb5d40690d
+* author:	amyvanzi98 (https://sketchfab.com/amyvanzi98)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "rope bridge" (https://sketchfab.com/3d-models/rope-bridge-a9d56576339a4f31bfb429bb5d40690d) by amyvanzi98 (https://sketchfab.com/amyvanzi98) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

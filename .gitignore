@@ -1,0 +1,4 @@
+# Godot editor cache and import artefacts (regenerated on import)
+.godot/
+# Render previews from --shot runs
+shots/
