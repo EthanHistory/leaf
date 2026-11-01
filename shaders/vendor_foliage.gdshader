@@ -28,7 +28,9 @@ void vertex() {
 	wnorm = normalize((MODEL_MATRIX * vec4(NORMAL, 0.0)).xyz);
 	inst = MODEL_MATRIX[3].xyz;
 	if (up_normals) {
-		NORMAL = normalize(mix(NORMAL, normalize((inverse(MODEL_MATRIX) * vec4(0.0, 1.0, 0.0, 0.0)).xyz), 0.8));
+		// Instances only spin about Y with uniform scale, so world up in object space
+		// is just +Y; no per-vertex matrix inverse needed.
+		NORMAL = normalize(mix(NORMAL, vec3(0.0, 1.0, 0.0), 0.8));
 	}
 }
 

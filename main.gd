@@ -36,6 +36,12 @@ var shot_frames := 150
 var cam_mode := "main"
 var bench := false
 var vendor_cache := {}
+var player: CharacterBody3D
+var env: Environment
+var sun: DirectionalLight3D
+# Benchmark A/B: `--off=fog,ssao,dof,glow,shadows,msaa,fxaa,grass,water,treeshadow`
+# disables those features.
+var off: PackedStringArray = []
 
 
 # Keep in sync with tools/build_assets.py.
@@ -100,6 +106,8 @@ func _ready() -> void:
 			cam_mode = arg.substr(6)
 		elif arg == "--bench":
 			bench = true
+		elif arg.begins_with("--off="):
+			off = arg.substr(6).split(",")
 
 	noise_tex = _noise(256, 0.02, false)
 	_setup_environment()
@@ -110,12 +118,16 @@ func _ready() -> void:
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 
-	_add_water()
+	if not off.has("water"):
+		_add_water()
 	_add_trees()
 	_add_props()
 	_scatter_rocks()
-	_scatter_grass()
+	if not off.has("grass"):
+		_scatter_grass()
 	_scatter_pads()
+	if cam_mode == "main":
+		_add_player()
 
 	if bench:
 		_run_benchmark()
@@ -277,7 +289,7 @@ func _setup_environment() -> void:
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
 
-	var env := Environment.new()
+	env = Environment.new()
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
@@ -310,17 +322,34 @@ func _setup_environment() -> void:
 	we.camera_attributes = attrs
 	add_child(we)
 
-	var sun := DirectionalLight3D.new()
+	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-42.0, 150.0, 0.0)
 	sun.light_color = Color(1.0, 0.94, 0.82)
 	sun.light_energy = 2.3
 	sun.shadow_enabled = true
-	sun.directional_shadow_max_distance = 45.0
+	# Shadow rendering dominated GPU time (~13 of 23 ms) and swung with the view
+	# heading, since every tree and bush in the cascades is redrawn per split.
+	# Two splits over a shorter range keep the near shadows that matter.
+	sun.directional_shadow_mode = DirectionalLight3D.SHADOW_PARALLEL_2_SPLITS
+	sun.directional_shadow_max_distance = 32.0
 	sun.light_volumetric_fog_energy = 1.5
 	add_child(sun)
 
+	env.volumetric_fog_enabled = env.volumetric_fog_enabled and not off.has("fog")
+	env.ssao_enabled = env.ssao_enabled and not off.has("ssao")
+	env.glow_enabled = env.glow_enabled and not off.has("glow")
+	attrs.dof_blur_far_enabled = not off.has("dof")
+	sun.shadow_enabled = not off.has("shadows")
+	if off.has("msaa"):
+		get_viewport().msaa_3d = Viewport.MSAA_DISABLED
+	if off.has("fxaa"):
+		get_viewport().screen_space_aa = Viewport.SCREEN_SPACE_AA_DISABLED
+
 
 func _setup_camera() -> void:
+	# The default mode is third-person play; the player brings its own camera.
+	if cam_mode == "main":
+		return
 	camera = Camera3D.new()
 	camera.set_script(load("res://fly_camera.gd"))
 	camera.fov = 60.0
@@ -334,7 +363,7 @@ func _setup_camera() -> void:
 	elif cam_mode == "top":
 		camera.position = Vector3(0, 60, -14)
 		camera.look_at(Vector3(0, 0, -14.01))
-	else:
+	else:  # "fly": the original overview shot
 		camera.position = Vector3(river_cx(CAMERA_Z) + 0.4, 4.2, CAMERA_Z)
 		camera.look_at(Vector3(river_cx(-12.0), 0.2, -12.0))
 
@@ -376,7 +405,7 @@ func _add_trees() -> void:
 		per_variant[rng.randi() % names.size()].append(_random_xform(x, z, 0.85 * rng.randf_range(0.8, 1.25), 0.1))
 		placed += 1
 	for v in names.size():
-		_multimesh(_vendor(names[v], 0.1), null, per_variant[v], true, 16.0)
+		_multimesh(_vendor(names[v], 0.1), null, per_variant[v], not off.has("treeshadow"), 16.0)
 
 	# A few big twisted trees deep in the forest for silhouette variety.
 	for i in 6:
@@ -404,8 +433,10 @@ func _add_trees() -> void:
 			continue
 		var k := rng.randi() % kinds.size()
 		sets[k].append(_random_xform(x, z, kinds[k][1] * rng.randf_range(0.75, 1.3), 0.05))
+	# Undergrowth sits in the trees' shade anyway; its own shadows cost a lot of
+	# alpha-tested shadow-pass fill for little visible gain.
 	for k in kinds.size():
-		_multimesh(_vendor(kinds[k][0], 0.06), null, sets[k], true, 12.0, 45.0)
+		_multimesh(_vendor(kinds[k][0], 0.06), null, sets[k], false, 12.0, 45.0)
 
 
 func _add_props() -> void:
@@ -548,9 +579,26 @@ func _scatter_pads() -> void:
 	_multimesh(pad, mat, xforms, false)
 
 
+## Spawns the player on the right bank near the old overview camera, facing upstream.
+func _add_player() -> void:
+	player = CharacterBody3D.new()
+	player.set_script(load("res://player.gd"))
+	var z := 6.0
+	var x := river_cx(z) + river_w(z) + 2.5
+	player.position = Vector3(x, _ground_y(x, z) + 0.1, z)
+	add_child(player)
+	# Start with the camera behind the player, looking up the stream.
+	player.model.rotation.y = PI
+	player.pivot.global_position = player.global_position + Vector3.UP * 1.45
+
+
 ## Prints GPU-bound frame stats with vsync off:  godot --path . -- --bench
 func _run_benchmark() -> void:
 	DisplayServer.window_set_vsync_mode(DisplayServer.VSYNC_DISABLED)
+	if player:
+		await _bench_directions()
+		get_tree().quit()
+		return
 	for i in 120:
 		await get_tree().process_frame
 	var frames := 300
@@ -562,6 +610,34 @@ func _run_benchmark() -> void:
 	var prims := RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME)
 	print("bench: %.2f ms/frame (%.0f fps), %d draw calls, %.2fM primitives" % [ms, 1000.0 / ms, draws, prims / 1e6])
 	get_tree().quit()
+
+
+## Turns the player camera through 8 headings and prints CPU/GPU frame time for each,
+## since cost depends on what's in view.
+func _bench_directions() -> void:
+	var vp := get_viewport().get_viewport_rid()
+	RenderingServer.viewport_set_measure_render_time(vp, true)
+	print("bench off=%s" % [",".join(off)])
+	var total := 0.0
+	for i in 8:
+		player.pivot.rotation.y = TAU * i / 8.0
+		for f in 60:
+			await get_tree().process_frame
+		var frames := 120
+		var gpu := 0.0
+		var cpu := 0.0
+		var start := Time.get_ticks_usec()
+		for f in frames:
+			await get_tree().process_frame
+			gpu += RenderingServer.viewport_get_measured_render_time_gpu(vp)
+			cpu += RenderingServer.viewport_get_measured_render_time_cpu(vp)
+		var ms := (Time.get_ticks_usec() - start) / 1000.0 / frames
+		total += ms
+		var draws := RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)
+		var prims := RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME)
+		print("  heading %3d: %6.2f ms frame | gpu %6.2f | render-cpu %5.2f | %5d draws | %.2fM prims" % [
+			i * 45, ms, gpu / frames, cpu / frames, draws, prims / 1e6])
+	print("  average: %.2f ms" % (total / 8.0))
 
 
 func _take_screenshot() -> void:
