@@ -20,12 +20,21 @@ const SENSITIVITY := 0.0025
 const CAM_DISTANCE := 4.8
 const CAM_PITCH := -0.32  # looking slightly down at the player, as in the reference
 const BLEND := 0.2
+# Hair spring bones (chains built by tools/build_heroine.py). Lengths are in the
+# model's own units, before MODEL_SCALE.
+const HAIR_STIFFNESS := 0.5
+const HAIR_DRAG := 0.35
+const HAIR_GRAVITY := 0.6
+const HAIR_RADIUS := 0.012
+const WIND := Vector3(0.12, 0.0, 0.05)  # breeze the hair drifts in
+const AIRFLOW := 0.15  # headwind from moving, per m/s: streams the hair out behind
 
 var model: Node3D
 var anim: AnimationPlayer
 var pivot: Node3D
 var arm: SpringArm3D
 var camera: Camera3D
+var hair: SpringBoneSimulator3D
 var auto_mode := ""
 var start_ms := 0
 
@@ -51,6 +60,7 @@ func _ready() -> void:
 	model.scale = Vector3.ONE * MODEL_SCALE
 	add_child(model)
 	_tune_material()
+	_add_hair_physics()
 	anim = model.find_children("*", "AnimationPlayer", true, false)[0]
 	for n in ["idle", "walk", "run"]:
 		var a := anim.get_animation(n)
@@ -90,9 +100,12 @@ func _tune_material() -> void:
 		if mat == null:
 			continue
 		mat = mat.duplicate()
-		mat.roughness = 1.0  # scales the map
-		mat.roughness_texture = load("res://assets/characters/heroine_roughness.png")
-		mat.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_RED
+		if mi.name == "Hair":
+			mat.roughness = 0.38
+		else:
+			mat.roughness = 1.0  # scales the map
+			mat.roughness_texture = load("res://assets/characters/heroine_roughness.png")
+			mat.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_RED
 		mat.metallic_specular = 0.4
 		mat.rim_enabled = true
 		mat.rim = 0.2
@@ -101,14 +114,73 @@ func _tune_material() -> void:
 		mi.material_override = mat
 
 
+## Swings the hair chains with a spring simulation, so the hair bounces with her
+## stride, streams out behind when she runs and drifts in the wind. The
+## head and torso are collision shapes the hair slides over.
+func _add_hair_physics() -> void:
+	var skel: Skeleton3D = model.find_children("*", "Skeleton3D", true, false)[0]
+	var chains: Array[String] = []
+	for b in skel.get_bone_count():
+		var n := skel.get_bone_name(b)
+		if n.begins_with("hair_") and n.ends_with("_0"):
+			chains.append(n.trim_suffix("_0"))
+	hair = SpringBoneSimulator3D.new()
+	hair.setting_count = chains.size()
+	for i in chains.size():
+		var last := 0
+		while skel.find_bone("%s_%d" % [chains[i], last + 1]) >= 0:
+			last += 1
+		hair.set_root_bone_name(i, chains[i] + "_0")
+		hair.set_end_bone_name(i, "%s_%d" % [chains[i], last])
+		hair.set_extend_end_bone(i, true)
+		hair.set_end_bone_length(i, 0.03)
+		hair.set_stiffness(i, HAIR_STIFFNESS)
+		hair.set_drag(i, HAIR_DRAG)
+		hair.set_gravity(i, HAIR_GRAVITY)
+		hair.set_radius(i, HAIR_RADIUS * MODEL_SCALE)
+	skel.add_child(hair)
+	# Simulate in the player's space rather than the world's: the body moves in
+	# physics ticks, and the hair would whip at every tick's jump. The player
+	# node neither turns nor scales, so "down" is still down; the run is felt
+	# through AIRFLOW instead.
+	for i in chains.size():
+		hair.set_center_from(i, SpringBoneSimulator3D.CENTER_FROM_NODE)
+		hair.set_center_node(i, hair.get_path_to(self))
+	_add_hair_collider("mixamorig_Head", Vector3(0, 0.045, 0.005), 0.062, 0.0)
+	_add_hair_collider("mixamorig_Neck", Vector3(0, 0.02, 0), 0.035, 0.0)
+	_add_hair_collider("mixamorig_Spine2", Vector3(0, 0.0, -0.01), 0.058, 0.2)
+	_add_hair_collider("mixamorig_LeftShoulder", Vector3(0, 0.06, 0), 0.026, 0.0)
+	_add_hair_collider("mixamorig_RightShoulder", Vector3(0, 0.06, 0), 0.026, 0.0)
+
+
+## A sphere, or a capsule along the bone when [param height] > 0.
+func _add_hair_collider(bone: String, offset: Vector3, radius: float, height: float) -> void:
+	var c: SpringBoneCollision3D
+	if height > 0.0:
+		var cap := SpringBoneCollisionCapsule3D.new()
+		cap.radius = radius * MODEL_SCALE
+		cap.height = height * MODEL_SCALE
+		c = cap
+	else:
+		var sph := SpringBoneCollisionSphere3D.new()
+		sph.radius = radius * MODEL_SCALE
+		c = sph
+	c.bone_name = bone
+	c.position_offset = offset * MODEL_SCALE
+	hair.add_child(c)
+
+
 ## The heroine clips carry root motion (the hips travel forward along Z), which
 ## would pull the model away from the capsule and snap it back each loop. Pin the
-## hips' Z to the first key so the clips play in place.
+## hips' Z to their rest position so the clips play in place. (Not to the first
+## key: the run clip starts 0.57 m forward, which put her a metre ahead of the
+## capsule while running.)
 func _strip_root_motion(a: Animation) -> void:
+	var skel: Skeleton3D = model.find_children("*", "Skeleton3D", true, false)[0]
+	var z0 := skel.get_bone_rest(skel.find_bone("mixamorig_Hips")).origin.z
 	for t in a.get_track_count():
 		if a.track_get_type(t) == Animation.TYPE_POSITION_3D \
 				and String(a.track_get_path(t)).ends_with(":mixamorig_Hips"):
-			var z0: float = a.track_get_key_value(t, 0).z
 			for k in a.track_get_key_count(t):
 				var p: Vector3 = a.track_get_key_value(t, k)
 				a.track_set_key_value(t, k, Vector3(p.x, p.y, z0))
@@ -164,6 +236,11 @@ func _physics_process(delta: float) -> void:
 
 
 func _process(delta: float) -> void:
+	# Gusting breeze: a steady push plus two slow, out-of-step waves.
+	var t := Time.get_ticks_msec() / 1000.0
+	var gust := 0.5 + 0.3 * sin(t * 1.3) + 0.2 * sin(t * 3.1 + 1.7)
+	hair.external_force = WIND * gust - Vector3(velocity.x, 0.0, velocity.z) * AIRFLOW
+
 	# Camera follows smoothly, so steps and slopes don't jolt the view. Movement
 	# runs at the physics rate; following the interpolated position keeps the
 	# character from juddering when the screen refreshes faster than that.

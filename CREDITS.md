@@ -25,4 +25,6 @@
 ## Project-owned
 
 - Player character: generated with Tripo (https://www.tripo3d.ai) and rigged with
-  idle, walk and run clips; converted from FBX to assets/characters/heroine.glb.
+  idle, walk and run clips (tools/src/heroine_tripo.glb). tools/build_heroine.py
+  realigns the painted eyes and brows with the sculpt and gives the hair its own
+  mesh and spring-bone chains, writing assets/characters/heroine.glb.
