@@ -32,6 +32,10 @@
   (tools/src/creature_tripo.glb). tools/build_leafling.py rebuilds its skinning,
   adds eyelid, mouth, leaf, sprout and tail bones and bakes Idle and Walk clips,
   writing assets/characters/leafling.glb.
+- Leaf warrior (잎사귀 전사): generated with Tripo (tools/src/warrior_tripo.glb;
+  not committed, 58 MB). tools/build_leaf_warrior.py decimates it, rigs and
+  skins it, bakes its textures onto one atlas and bakes Idle and Walk clips,
+  writing assets/characters/leaf_warrior/leaf_warrior.glb.
 - Axe and shield: generated with Tripo (tools/src/axe_tripo.glb, shield_tripo.glb;
   not committed, 60 MB each). tools/build_gear.py decimates them, scales them to
   size and lines them up for mounting, writing assets/gear/.

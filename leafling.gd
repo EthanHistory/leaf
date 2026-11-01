@@ -6,7 +6,7 @@ extends Node3D
 ##
 ## The model and its Idle / Walk clips come from tools/build_leafling.py.
 ## The level sets [member home], [member ground] and [member is_free] before
-## adding it to the tree.
+## adding it to the tree. leaf_warrior.gd reuses all this with its own model.
 
 const MODEL := preload("res://assets/characters/leafling.glb")
 const WALK_SPEED := 0.4  # m/s at scale 1
@@ -32,6 +32,13 @@ var is_free: Callable
 ## The node it turns to look at when close (the player), if any.
 var watch: Node3D
 
+# Set in _init by kinds that extend this one.
+var scene: PackedScene = MODEL
+var walk_speed := WALK_SPEED
+var walk_anim_speed := WALK_ANIM_SPEED
+var tint := SKIN_TINT
+var space := SPACE
+
 var rng := RandomNumberGenerator.new()
 var model: Node3D
 var anim: AnimationPlayer
@@ -42,7 +49,7 @@ var wait := 0.0
 
 func _ready() -> void:
 	rng.randomize()
-	model = MODEL.instantiate()
+	model = scene.instantiate()
 	add_child(model)
 	_tune_materials()
 	anim = model.find_children("*", "AnimationPlayer", true, false)[0]
@@ -75,7 +82,7 @@ func _tune_materials() -> void:
 				mat.rim = 0.15
 				mat.rim_tint = 0.7
 				if not orig.resource_name in ["Mouth", "Lash"]:
-					mat.albedo_color *= SKIN_TINT
+					mat.albedo_color *= tint
 				if orig.resource_name.begins_with("eye"):
 					mat.roughness = 0.15  # glossy eyes catch a highlight
 					mat.metallic_specular = 0.7
@@ -94,7 +101,7 @@ func _physics_process(delta: float) -> void:
 		_face(watch.global_position, delta)
 	elif walking:
 		var to := Vector2(target.x - position.x, target.z - position.z)
-		var step := WALK_SPEED * scale.x * delta
+		var step := walk_speed * scale.x * delta
 		if to.length() <= step or _blocked():
 			walking = false
 			wait = rng.randf_range(IDLE_TIME.x, IDLE_TIME.y)
@@ -112,7 +119,7 @@ func _physics_process(delta: float) -> void:
 	var clip := "Walk" if walking else "Idle"
 	if anim.current_animation != clip:
 		anim.play(clip, BLEND)
-	anim.speed_scale = WALK_ANIM_SPEED if walking else 1.0
+	anim.speed_scale = walk_anim_speed if walking else 1.0
 
 
 func _face(at: Vector3, delta: float) -> void:
@@ -133,14 +140,15 @@ func _pick_target() -> void:
 	wait = 1.0
 
 
-## Whether no other leafling stands or is heading within SPACE of [param p].
+## Whether no other leafling stands or is heading too near [param p].
 func _room_at(p: Vector3) -> bool:
 	for o in herd:
 		if o == self:
 			continue
-		if Vector2(p.x - o.position.x, p.z - o.position.z).length() < SPACE:
+		var gap: float = (space + o.space) * 0.5
+		if Vector2(p.x - o.position.x, p.z - o.position.z).length() < gap:
 			return false
-		if o.walking and Vector2(p.x - o.target.x, p.z - o.target.z).length() < SPACE:
+		if o.walking and Vector2(p.x - o.target.x, p.z - o.target.z).length() < gap:
 			return false
 	return true
 
@@ -152,6 +160,6 @@ func _blocked() -> bool:
 		if o == self:
 			continue
 		var d := Vector2(o.position.x - position.x, o.position.z - position.z)
-		if d.length() < SPACE * 0.8 and d.dot(fwd) > 0.0:
+		if d.length() < (space + o.space) * 0.4 and d.dot(fwd) > 0.0:
 			return true
 	return false
