@@ -28,6 +28,10 @@
   idle, walk and run clips (tools/src/heroine_tripo.glb). tools/build_heroine.py
   realigns the painted eyes and brows with the sculpt and gives the hair its own
   mesh and spring-bone chains, writing assets/characters/heroine.glb.
+- Leafling (깻잎 숲 몬스터): generated and auto-rigged with Tripo
+  (tools/src/creature_tripo.glb). tools/build_leafling.py rebuilds its skinning,
+  adds eyelid, mouth, leaf, sprout and tail bones and bakes Idle and Walk clips,
+  writing assets/characters/leafling.glb.
 - Axe and shield: generated with Tripo (tools/src/axe_tripo.glb, shield_tripo.glb;
   not committed, 60 MB each). tools/build_gear.py decimates them, scales them to
   size and lines them up for mounting, writing assets/gear/.
