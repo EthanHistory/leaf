@@ -26,8 +26,12 @@ ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SRC = os.path.join(ROOT, "tools", "src")
 OUT = os.path.join(ROOT, "assets", "gear")
 
-AXE_LENGTH = 0.48  # metres, butt to top of the head
+AXE_LENGTH = 0.48  # metres, butt to top of the head, before the stretch below
 AXE_GRIP = 0.3  # grip point, as a fraction of the haft from the butt
+# The Tripo axe reads as a hatchet; lengthen the haft below the head (about the
+# grip) and enlarge the head, leaving the haft as thick as it was.
+HAFT_STRETCH = 1.5
+HEAD_SCALE = 2.0
 SHIELD_HEIGHT = 0.62
 TARGET_TRIS = 12000
 TEXTURE_SIZE = 1024
@@ -116,7 +120,33 @@ def build_axe():
     z = Vector(blade)
     x = y.cross(z)
     place(obj, godot_frame(x, y, z), grip, AXE_LENGTH / length)
+    resize_axe(obj)
     return obj
+
+
+def resize_axe(obj):
+    """Stretches the haft and scales up the head, in the placed frame (Blender
+    space: haft along +Z from the grip at 0, edge towards -Y)."""
+    p = verts(obj)
+    z = p[:, 2]
+    # The haft's own centre line and radius, from the stretch below the head.
+    mid = (z > 0.1 * z.max()) & (z < 0.4 * z.max())
+    centre = np.median(p[mid, :2], axis=0)
+    r = np.linalg.norm(p[:, :2] - centre, axis=1)
+    haft_r = np.percentile(r[mid], 95)
+    # The head starts where the beard first reaches well off the haft.
+    head0 = z[r > 2.0 * haft_r].min() - 0.01
+    # Above head0 everything grows HEAD_SCALE times upwards; off the haft, the
+    # head also grows HEAD_SCALE times outwards, ramping in from the haft's
+    # surface so the haft keeps its thickness where it runs through the eye.
+    zn = np.where(z < head0, z * HAFT_STRETCH, head0 * HAFT_STRETCH + (z - head0) * HEAD_SCALE)
+    w = np.clip((z - (head0 - 0.01)) / 0.01, 0.0, 1.0)
+    w *= np.clip((r - haft_r) / haft_r, 0.0, 1.0)
+    p[:, :2] = centre + (p[:, :2] - centre) * (1.0 + (HEAD_SCALE - 1.0) * w)[:, None]
+    p[:, 2] = zn
+    obj.data.vertices.foreach_set("co", p.ravel())
+    obj.data.update()
+    print("axe: haft r %.3f, head from %.3f, %.3f to %.3f m" % (haft_r, head0, zn.min(), zn.max()))
 
 
 def build_shield():
@@ -166,12 +196,12 @@ def preview(obj, name):
     sc.render.resolution_x = sc.render.resolution_y = 500
     cd = bpy.data.cameras.new("cam")
     cd.type = "ORTHO"
-    cd.ortho_scale = 0.8
+    cd.ortho_scale = 1.0
     cam = bpy.data.objects.new("cam", cd)
     sc.collection.objects.link(cam)
     sc.camera = cam
     # Godot front (+Z) is Blender -Y; side looks from Godot +X.
-    for view, rot, loc in (("front", (90, 0, 0), (0, -2, 0.1)), ("side", (90, 0, 90), (2, 0, 0.1))):
+    for view, rot, loc in (("front", (90, 0, 0), (0, -2, 0.15)), ("side", (90, 0, 90), (2, 0, 0.15))):
         cam.rotation_euler = [math.radians(a) for a in rot]
         cam.location = loc
         sc.render.filepath = os.path.join(PREVIEW, f"{name}_{view}.png")
