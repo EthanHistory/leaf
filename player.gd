@@ -6,12 +6,14 @@ extends CharacterBody3D
 ## Screenshot and benchmark runs leave the mouse alone so camera angles are reproducible.
 
 const WALK_SPEED := 1.25
-const RUN_SPEED := 6.2  # FastRun at 1.25x: as fast as the stride allows without sliding
-# Ground speed each clip covers on this character: Walk from the UAL root-motion
-# clip, FastRun (Mixamo "Fast Run") from its hip travel. Playback is scaled by
-# actual speed so the feet don't slide, capped so the stride doesn't look frantic.
-const CLIP_SPEED := {"Walk": 0.99, "FastRun": 4.98}
-const MAX_ANIM_SCALE := {"Walk": 1.5, "FastRun": 1.25}
+const RUN_SPEED := 5.3  # run at 1.25x: as fast as the stride allows without sliding
+const MODEL_HEIGHT := 1.7  # the heroine .glb is ~1.0 m tall; scale it to fit the capsule
+const MODEL_SCALE := MODEL_HEIGHT / 1.0
+# Ground speed each clip covers at MODEL_SCALE, from the hip travel of its root
+# motion. Playback is scaled by actual speed so the feet don't slide, capped so
+# the stride doesn't look frantic.
+const CLIP_SPEED := {"walk": 0.692 * MODEL_SCALE, "run": 2.52 * MODEL_SCALE}
+const MAX_ANIM_SCALE := {"walk": 1.5, "run": 1.25}
 const ACCEL := 10.0
 const TURN_SPEED := 10.0
 const SENSITIVITY := 0.0025
@@ -45,13 +47,16 @@ func _ready() -> void:
 	col.position.y = 0.85
 	add_child(col)
 
-	model = load("res://assets/characters/female.glb").instantiate()
+	model = load("res://assets/characters/heroine.glb").instantiate()
+	model.scale = Vector3.ONE * MODEL_SCALE
 	add_child(model)
-	_apply_materials()
+	_tune_material()
 	anim = model.find_children("*", "AnimationPlayer", true, false)[0]
-	for n in ["Idle", "Walk", "FastRun"]:
-		anim.get_animation(n).loop_mode = Animation.LOOP_LINEAR
-	anim.play("Idle")
+	for n in ["idle", "walk", "run"]:
+		var a := anim.get_animation(n)
+		a.loop_mode = Animation.LOOP_LINEAR
+		_strip_root_motion(a)
+	anim.play("idle")
 
 	pivot = Node3D.new()
 	pivot.position.y = 1.45
@@ -75,20 +80,38 @@ func _ready() -> void:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
-## The Blender hair/eyebrow tints use nodes glTF can't carry, so set them here.
-func _apply_materials() -> void:
-	var hair := ShaderMaterial.new()
-	hair.shader = load("res://shaders/hair.gdshader")
-	var brow := StandardMaterial3D.new()
-	brow.albedo_color = Color(0.32, 0.22, 0.14)
-	var cap := StandardMaterial3D.new()
-	cap.albedo_color = Color(0.36, 0.26, 0.17)
-	cap.roughness = 0.6
+## Tripo exports one fully matte material (roughness 0.9) for skin, hair and
+## clothes, which reads as clay. A baked roughness map (tools/bake_heroine_roughness.py)
+## gives each its own sheen, and a rim makes the silhouette and face stand out. (Screen-space subsurface scattering was tried and dropped:
+## it blurs the painted eyes and brows.)
+func _tune_material() -> void:
 	for mi in model.find_children("*", "MeshInstance3D", true, false):
-		match String(mi.name):
-			"Hair_New": mi.material_override = hair
-			"Hair_Cap": mi.material_override = cap
-			"Eyebrows": mi.material_override = brow
+		var mat := (mi as MeshInstance3D).get_active_material(0) as StandardMaterial3D
+		if mat == null:
+			continue
+		mat = mat.duplicate()
+		mat.roughness = 1.0  # scales the map
+		mat.roughness_texture = load("res://assets/characters/heroine_roughness.png")
+		mat.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_RED
+		mat.metallic_specular = 0.4
+		mat.rim_enabled = true
+		mat.rim = 0.2
+		mat.rim_tint = 0.6
+		mat.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+		mi.material_override = mat
+
+
+## The heroine clips carry root motion (the hips travel forward along Z), which
+## would pull the model away from the capsule and snap it back each loop. Pin the
+## hips' Z to the first key so the clips play in place.
+func _strip_root_motion(a: Animation) -> void:
+	for t in a.get_track_count():
+		if a.track_get_type(t) == Animation.TYPE_POSITION_3D \
+				and String(a.track_get_path(t)).ends_with(":mixamorig_Hips"):
+			var z0: float = a.track_get_key_value(t, 0).z
+			for k in a.track_get_key_count(t):
+				var p: Vector3 = a.track_get_key_value(t, k)
+				a.track_set_key_value(t, k, Vector3(p.x, p.y, z0))
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -130,11 +153,11 @@ func _physics_process(delta: float) -> void:
 		model.rotation.y = lerp_angle(model.rotation.y, want, 1.0 - exp(-TURN_SPEED * delta))
 
 	var speed := Vector2(velocity.x, velocity.z).length()
-	var next := "Idle"
+	var next := "idle"
 	if speed > (WALK_SPEED + RUN_SPEED) * 0.5:
-		next = "FastRun"
+		next = "run"
 	elif speed > 0.3:
-		next = "Walk"
+		next = "walk"
 	if anim.current_animation != next:
 		anim.play(next, BLEND)
 	anim.speed_scale = clampf(speed / CLIP_SPEED[next], 0.8, MAX_ANIM_SCALE[next]) if CLIP_SPEED.has(next) else 1.0

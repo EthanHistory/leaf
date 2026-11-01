@@ -3,6 +3,7 @@ extends Node3D
 ## the Quaternius Stylized Nature MegaKit (CC0, assets/vendor/megakit).
 ##
 ## Screenshot mode:  godot --path . -- --shot=out.png [--cam=top] [--frames=150]
+## `--cam=portrait` frames the player's face from the front, for checking the character.
 
 const WATER_Y := -0.2
 const BRIDGE_Z := -19.0
@@ -126,7 +127,7 @@ func _ready() -> void:
 	if not off.has("grass"):
 		_scatter_grass()
 	_scatter_pads()
-	if cam_mode == "main":
+	if cam_mode == "main" or cam_mode == "portrait":
 		_add_player()
 
 	if bench:
@@ -348,7 +349,7 @@ func _setup_environment() -> void:
 
 func _setup_camera() -> void:
 	# The default mode is third-person play; the player brings its own camera.
-	if cam_mode == "main":
+	if cam_mode == "main" or cam_mode == "portrait":
 		return
 	camera = Camera3D.new()
 	camera.set_script(load("res://fly_camera.gd"))
@@ -590,6 +591,9 @@ func _add_player() -> void:
 	# Start with the camera behind the player, looking up the stream.
 	player.model.rotation.y = PI
 	player.pivot.global_position = player.global_position + Vector3.UP * 1.45
+	if cam_mode == "portrait":
+		player.pivot.rotation = Vector3(-0.15, PI, 0)
+		player.arm.spring_length = 0.75
 
 
 ## Prints GPU-bound frame stats with vsync off:  godot --path . -- --bench

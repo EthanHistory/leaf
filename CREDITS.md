@@ -21,13 +21,8 @@
 
 - Trees, bushes, grass and flowers: "Stylized Nature MegaKit" (Standard) by Quaternius
   (https://quaternius.com/packs/stylizednaturemegakit.html).
-- Player character body, eyes and eyebrows: "Universal Base Characters" (Standard,
-  Superhero_Female) by Quaternius (https://quaternius.itch.io/universal-base-characters).
-  Modified: new clump-based hair and scalp cap modelled for this project.
-- Idle and walk animations: "Universal Animation Library" (Standard) by Quaternius
-  (https://quaternius.itch.io/universal-animation-library), retargeted to the character.
 
-## Mixamo (Adobe, royalty-free for use in projects)
+## Project-owned
 
-- Run animation: "Fast Run" from Mixamo (https://www.mixamo.com), retargeted and
-  baked into assets/characters/female.glb.
+- Player character: generated with Tripo (https://www.tripo3d.ai) and rigged with
+  idle, walk and run clips; converted from FBX to assets/characters/heroine.glb.

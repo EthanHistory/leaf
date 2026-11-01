@@ -2,24 +2,23 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://pujf0mr676v1"
-path.s3tc="res://.godot/imported/female_T_Eye_Brown.png-e40c50e12d74ba096f9946ee84bf9483.s3tc.ctex"
+uid="uid://dh4pa34gqt5b4"
+path="res://.godot/imported/heroine_tripo_image_e894fd3d-702c-408a-a9b4-75fc3fa2389a_0_0.jpg-f9b0444abbef72a0f36cab96f37f6284.ctex"
 metadata={
-"imported_formats": ["s3tc_bptc"],
-"vram_texture": true
+"vram_texture": false
 }
 generator_parameters={
-"md5": "830da396e71092b8bf809e8c522e8638"
+"md5": "45667cc6015a906545e0099b5d75e883"
 }
 
 [deps]
 
-source_file="res://assets/characters/female_T_Eye_Brown.png"
-dest_files=["res://.godot/imported/female_T_Eye_Brown.png-e40c50e12d74ba096f9946ee84bf9483.s3tc.ctex"]
+source_file="res://assets/characters/heroine_tripo_image_e894fd3d-702c-408a-a9b4-75fc3fa2389a_0_0.jpg"
+dest_files=["res://.godot/imported/heroine_tripo_image_e894fd3d-702c-408a-a9b4-75fc3fa2389a_0_0.jpg-f9b0444abbef72a0f36cab96f37f6284.ctex"]
 
 [params]
 
-compress/mode=2
+compress/mode=0
 compress/high_quality=false
 compress/lossy_quality=0.7
 compress/uastc_level=0
