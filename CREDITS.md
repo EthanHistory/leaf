@@ -28,3 +28,6 @@
   idle, walk and run clips (tools/src/heroine_tripo.glb). tools/build_heroine.py
   realigns the painted eyes and brows with the sculpt and gives the hair its own
   mesh and spring-bone chains, writing assets/characters/heroine.glb.
+- Axe and shield: generated with Tripo (tools/src/axe_tripo.glb, shield_tripo.glb;
+  not committed, 60 MB each). tools/build_gear.py decimates them, scales them to
+  size and lines them up for mounting, writing assets/gear/.

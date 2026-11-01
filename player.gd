@@ -1,6 +1,7 @@
 extends CharacterBody3D
 ## Third-person player: mouse orbits the camera, WASD moves relative to the camera,
-## Shift runs. Esc frees the mouse, left click captures it again.
+## Shift runs, R draws or stows the axe and shield. Esc frees the mouse, left
+## click captures it again.
 ##
 ## For screenshots, `-- --auto=walk|run` fakes holding W (and Shift for run).
 ## Screenshot and benchmark runs leave the mouse alone so camera angles are reproducible.
@@ -28,6 +29,20 @@ const HAIR_GRAVITY := 0.6
 const HAIR_RADIUS := 0.012
 const WIND := Vector3(0.12, 0.0, 0.05)  # breeze the hair drifts in
 const AIRFLOW := 0.15  # headwind from moving, per m/s: streams the hair out behind
+# Gear (assets/gear, built by tools/build_gear.py). R draws or stows it: the
+# hands reach for it by IK, take it, and swing back. Times in seconds.
+const REACH_TIME := 0.35
+const RETURN_TIME := 0.4
+const SETTLE_TIME := 0.25  # gear glides from where it was taken into its new mount
+# Where the gear sits when stowed, in the model's rest pose and units (before
+# MODEL_SCALE): shield slung on the back, axe at the right hip.
+const BACK_MOUNT := Vector3(0.0, 0.7, -0.06)
+const BACK_ROLL := 0.25  # radians the slung shield leans, top towards her left
+const HIP_MOUNT := Vector3(-0.115, 0.43, -0.01)
+const HIP_TILT := 0.3  # radians the haft leans, head forward
+# Where the hands take hold of the stowed gear, in the gear's own metres.
+const SHIELD_HANDLE := Vector3(-0.16, 0.2, 0.0)
+const AXE_HANDLE := Vector3(0.0, 0.0, 0.0)
 
 var model: Node3D
 var anim: AnimationPlayer
@@ -37,14 +52,29 @@ var camera: Camera3D
 var hair: SpringBoneSimulator3D
 var auto_mode := ""
 var start_ms := 0
+var skel: Skeleton3D
+var axe: Node3D
+var shield: Node3D
+var arm_ik: TwoBoneIK3D
+# Per gear piece: {node, stowed: BoneAttachment3D, held: BoneAttachment3D,
+# stowed_mount, held_mount: Transform3D, handle: Node3D}.
+var gear: Array[Dictionary] = []
+var drawn := false
+var swapping := false
 
 
 func _ready() -> void:
 	start_ms = Time.get_ticks_msec()
 	var scripted := false  # screenshot/benchmark runs: never grab the mouse
+	var gear_mode := ""
+	var view := NAN
 	for a in OS.get_cmdline_user_args():
 		if a.begins_with("--auto="):
 			auto_mode = a.substr(7)
+		if a.begins_with("--gear="):
+			gear_mode = a.substr(7)
+		if a.begins_with("--view="):
+			view = deg_to_rad(float(a.substr(7)))
 		if a.begins_with("--shot=") or a == "--bench":
 			scripted = true
 
@@ -59,8 +89,10 @@ func _ready() -> void:
 	model = load("res://assets/characters/heroine.glb").instantiate()
 	model.scale = Vector3.ONE * MODEL_SCALE
 	add_child(model)
+	skel = model.find_children("*", "Skeleton3D", true, false)[0]
 	_tune_material()
 	_add_hair_physics()
+	_add_gear()
 	anim = model.find_children("*", "AnimationPlayer", true, false)[0]
 	for n in ["idle", "walk", "run"]:
 		var a := anim.get_animation(n)
@@ -85,6 +117,17 @@ func _ready() -> void:
 	camera.fov = 55.0
 	camera.current = true
 	arm.add_child(camera)
+
+	# Screenshot aids: `--gear=drawn` starts with the gear in hand, `--gear=draw`
+	# draws it straight away, `--gear=stow` puts it away; `--view=DEG` swings the
+	# camera round her, close up.
+	if gear_mode == "drawn" or gear_mode == "stow":
+		_set_drawn(true)
+	if gear_mode == "draw" or gear_mode == "stow":
+		toggle_gear.call_deferred()
+	if not is_nan(view):
+		pivot.rotation.y = view
+		arm.spring_length = 1.9
 
 	if not scripted:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
@@ -170,6 +213,123 @@ func _add_hair_collider(bone: String, offset: Vector3, radius: float, height: fl
 	hair.add_child(c)
 
 
+## Hangs the shield on her back and the axe at her hip, works out where each
+## sits in hand, and sets up the arm IK that reaches for them. Mounts are worked
+## out in the rest pose from the bones themselves, so they ride on whatever
+## the bone axes happen to be.
+func _add_gear() -> void:
+	axe = load("res://assets/gear/axe.glb").instantiate()
+	shield = load("res://assets/gear/shield.glb").instantiate()
+
+	var back := _mount(Vector3(sin(BACK_ROLL), cos(BACK_ROLL), 0), Vector3(0, 0, -1), BACK_MOUNT)
+	var hip := _mount(Vector3(0, cos(HIP_TILT), sin(HIP_TILT)), Vector3(0, 0, 1), HIP_MOUNT)
+
+	# In hand. The hand bones give the finger direction and, from index to
+	# pinky, the knuckle line; the palm faces across both.
+	var r_fingers := (_rest("RightHandMiddle1") - _rest("RightHand")).normalized()
+	var r_knuckles := (_rest("RightHandIndex1") - _rest("RightHandPinky1")).normalized()
+	var r_palm := r_knuckles.cross(r_fingers)
+	# The haft runs across the palm from the heel of the hand up past the index
+	# finger, head above the thumb and edge facing the way the knuckles do.
+	var axe_held := _mount(r_knuckles + r_fingers * 0.3, r_fingers,
+			_rest("RightHandMiddle1") + r_palm * 0.012 - r_fingers * 0.004)
+	# The shield is strapped to the outside of the forearm, top towards the elbow.
+	var l_fingers := (_rest("LeftHandMiddle1") - _rest("LeftHand")).normalized()
+	var l_knuckles := (_rest("LeftHandIndex1") - _rest("LeftHandPinky1")).normalized()
+	var l_back := l_knuckles.cross(l_fingers)
+	var elbow := _rest("LeftForeArm")
+	var wrist := _rest("LeftHand")
+	var shield_held := _mount(elbow - wrist, l_back, elbow.lerp(wrist, 0.55) + l_back * 0.022)
+
+	gear = [
+		_gear_piece(shield, "Spine2", back, "LeftForeArm", shield_held, SHIELD_HANDLE),
+		_gear_piece(axe, "Hips", hip, "RightHand", axe_held, AXE_HANDLE),
+	]
+	_set_drawn(false)
+
+	# Elbows: out and up when reaching over the shoulder for the shield, out
+	# and back when reaching down for the axe.
+	arm_ik = TwoBoneIK3D.new()
+	arm_ik.setting_count = 2
+	arm_ik.influence = 0.0
+	arm_ik.active = false
+	skel.add_child(arm_ik)
+	for i in 2:
+		var side := "Left" if i == 0 else "Right"
+		var pole := Node3D.new()
+		pole.position = Vector3(0.35, 0.95, 0.1) if i == 0 else Vector3(-0.4, 0.65, -0.25)
+		skel.add_child(pole)
+		arm_ik.set_root_bone_name(i, "mixamorig_%sArm" % side)
+		arm_ik.set_middle_bone_name(i, "mixamorig_%sForeArm" % side)
+		arm_ik.set_end_bone_name(i, "mixamorig_%sHand" % side)
+		arm_ik.set_target_node(i, arm_ik.get_path_to(gear[i].handle))
+		arm_ik.set_pole_node(i, arm_ik.get_path_to(pole))
+
+
+func _rest(bone: String) -> Vector3:
+	return skel.get_bone_global_rest(skel.find_bone("mixamorig_" + bone)).origin
+
+
+## A gear frame in model space: haft or top along [param up], edge or boss
+## towards [param front], scaled from the gear's metres to the model's units.
+func _mount(up: Vector3, front: Vector3, origin: Vector3) -> Transform3D:
+	var y := up.normalized()
+	var z := (front - y * y.dot(front)).normalized()
+	return Transform3D(Basis(y.cross(z), y, z).scaled(Vector3.ONE / MODEL_SCALE), origin)
+
+
+func _gear_piece(node: Node3D, stowed_bone: String, stowed: Transform3D,
+		held_bone: String, held: Transform3D, handle: Vector3) -> Dictionary:
+	var g := {"node": node}
+	for k in [["stowed", stowed_bone, stowed], ["held", held_bone, held]]:
+		var att := BoneAttachment3D.new()
+		att.bone_name = "mixamorig_" + k[1]
+		skel.add_child(att)
+		g[k[0]] = att
+		# From model space into the bone's own frame.
+		g[k[0] + "_mount"] = skel.get_bone_global_rest(skel.find_bone(att.bone_name)).affine_inverse() * k[2]
+	# What the hand reaches for, riding on the stowed mount.
+	g.handle = Node3D.new()
+	g.handle.position = g.stowed_mount * handle
+	g.stowed.add_child(g.handle)
+	return g
+
+
+func toggle_gear() -> void:
+	if swapping:
+		return
+	swapping = true
+	arm_ik.active = true
+	var tw := create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_property(arm_ik, "influence", 1.0, REACH_TIME)
+	tw.tween_callback(_set_drawn.bind(not drawn, true))
+	tw.tween_property(arm_ik, "influence", 0.0, RETURN_TIME)
+	tw.tween_callback(_end_swap)
+
+
+func _end_swap() -> void:
+	arm_ik.active = false
+	swapping = false
+
+
+## Moves the gear into the hands or back to where it is stowed. With
+## [param glide] it slides there from wherever it is instead of jumping.
+func _set_drawn(on: bool, glide := false) -> void:
+	drawn = on
+	for g in gear:
+		var node: Node3D = g.node
+		var mount: Transform3D = g.held_mount if on else g.stowed_mount
+		if node.get_parent():
+			node.reparent(g.held if on else g.stowed)
+		else:
+			g.stowed.add_child(node)
+		if glide:
+			create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT) \
+					.tween_property(node, "transform", mount, SETTLE_TIME)
+		else:
+			node.transform = mount
+
+
 ## The heroine clips carry root motion (the hips travel forward along Z), which
 ## would pull the model away from the capsule and snap it back each loop. Pin the
 ## hips' Z to their rest position so the clips play in place. (Not to the first
@@ -195,6 +355,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		pivot.rotation.x = clamp(pivot.rotation.x - event.relative.y * SENSITIVITY, -1.2, 0.35)
 	elif event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
 		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+	elif event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_R:
+		toggle_gear()
 	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 

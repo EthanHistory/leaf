@@ -2,3 +2,7 @@
 .godot/
 # Render previews from --shot runs
 shots/
+
+# Raw Tripo gear exports (60 MB each); tools/build_gear.py reads them
+tools/src/axe_tripo.glb
+tools/src/shield_tripo.glb
