@@ -1,9 +1,11 @@
 extends CharacterBody3D
 ## Third-person player: mouse orbits the camera, WASD moves relative to the camera,
-## Shift runs, R draws or stows the axe and shield. Esc frees the mouse, left
-## click captures it again.
+## Shift runs, R draws or stows the axe and shield, left click attacks (three
+## hits if clicked again in time; draws the gear first if it is stowed). Esc
+## frees the mouse, left click captures it again.
 ##
-## For screenshots, `-- --auto=walk|run` fakes holding W (and Shift for run).
+## For screenshots, `-- --auto=walk|run` fakes holding W (and Shift for run),
+## `--auto=attack` clicks through the combo over and over.
 ## Screenshot and benchmark runs leave the mouse alone so camera angles are reproducible.
 
 const WALK_SPEED := 1.25
@@ -43,6 +45,20 @@ const HIP_TILT := 0.3  # radians the haft leans, head forward
 # Where the hands take hold of the stowed gear, in the gear's own metres.
 const SHIELD_HANDLE := Vector3(-0.16, 0.2, 0.0)
 const AXE_HANDLE := Vector3(0.0, 0.0, 0.0)
+# Attack combo (clips retargeted from Mixamo by tools/build_heroine.py). Per hit,
+# in clip seconds: when the blade lands, and from when a buffered click cuts the
+# recovery short and goes on to the next hit. The last hit plays out in full.
+const ATTACKS := ["attack1", "attack2", "attack3"]
+const ATTACK_HIT := [0.57, 0.8, 0.73]
+const ATTACK_CHAIN := [0.8, 1.05, 1.0]
+# Hits that carry her along with the hips. The others only lean into the
+# blow and come back; moving the body with that would slide her feet.
+const ATTACK_TRAVELS := [false, false, true]
+const ATTACK_SPEED := 1.5  # quicker than the mocap, for a snappier feel
+const ATTACK_BLEND := 0.1
+const ATTACK_TURN := 0.12  # seconds to swing round to face the way she strikes
+
+signal attack_hit(index: int)
 
 var model: Node3D
 var anim: AnimationPlayer
@@ -61,6 +77,14 @@ var arm_ik: TwoBoneIK3D
 var gear: Array[Dictionary] = []
 var drawn := false
 var swapping := false
+var controls_enabled := true  # off while a menu (Travel) has the mouse and keys
+var combo := -1  # index into ATTACKS of the hit playing, -1 when not attacking
+var combo_queued := false
+# Attack clips before their root motion is stripped, and how far along the
+# hips' travel the playing hit has got (skeleton units, forward).
+var attack_root := {}
+var root_z := 0.0
+var hit_done := false
 
 
 func _ready() -> void:
@@ -97,6 +121,11 @@ func _ready() -> void:
 	for n in ["idle", "walk", "run"]:
 		var a := anim.get_animation(n)
 		a.loop_mode = Animation.LOOP_LINEAR
+		_strip_root_motion(a)
+	for n in ATTACKS:
+		var a := anim.get_animation(n)
+		a.loop_mode = Animation.LOOP_NONE
+		attack_root[n] = a.duplicate()  # keeps the hips' travel for _root_motion
 		_strip_root_motion(a)
 	anim.play("idle")
 
@@ -296,7 +325,7 @@ func _gear_piece(node: Node3D, stowed_bone: String, stowed: Transform3D,
 
 
 func toggle_gear() -> void:
-	if swapping:
+	if swapping or combo >= 0:
 		return
 	swapping = true
 	arm_ik.active = true
@@ -347,6 +376,8 @@ func _strip_root_motion(a: Animation) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	if not controls_enabled:
+		return
 	# Skip the first moments after start: capturing the mouse warps it to the
 	# window centre, and that jump would snap the camera to look straight down.
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED \
@@ -358,23 +389,98 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_R:
 		toggle_gear()
 	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
+			attack()
 		Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
 
 
-func _physics_process(delta: float) -> void:
+## Starts the combo, or asks for the next hit if one is already playing.
+func attack() -> void:
+	if swapping:
+		return
+	if not drawn:
+		toggle_gear()
+		return
+	if combo < 0:
+		_start_hit(0)
+	else:
+		combo_queued = true
+
+
+func _start_hit(i: int) -> void:
+	combo = i
+	combo_queued = false
+	hit_done = false
+	anim.speed_scale = 1.0  # walk and run leave it set to their stride
+	anim.play(ATTACKS[i], ATTACK_BLEND, ATTACK_SPEED)
+	root_z = _hips_z(0.0)
+	# Strike the way she is being steered, or straight ahead of the camera.
+	var dir := _input_dir()
+	if dir == Vector3.ZERO:
+		dir = Basis(Vector3.UP, pivot.rotation.y) * Vector3.FORWARD
+	var want := model.rotation.y + angle_difference(model.rotation.y, atan2(dir.x, dir.z))
+	create_tween().tween_property(model, "rotation:y", want, ATTACK_TURN)
+
+
+## Steps the combo on: lands the hit, chains on a buffered click, ends with
+## the clip.
+func _update_combo() -> void:
+	var t := anim.current_animation_position
+	if not hit_done and t >= ATTACK_HIT[combo]:
+		hit_done = true
+		attack_hit.emit(combo)
+	if combo_queued and combo + 1 < ATTACKS.size() and t >= ATTACK_CHAIN[combo]:
+		_start_hit(combo + 1)
+	elif anim.current_animation != ATTACKS[combo] or not anim.is_playing():
+		combo = -1
+		combo_queued = false
+
+
+## The ground the playing hit covers this tick, as a velocity: the hips' travel
+## is stripped from the clips, so the body has to carry her (attack3 lunges
+## about 2 m through its spin).
+func _root_motion(delta: float) -> Vector3:
+	var z := _hips_z(anim.current_animation_position)
+	var step := skel.global_basis * Vector3(0, 0, z - root_z)
+	root_z = z
+	return Vector3(step.x, 0, step.z) / delta
+
+
+func _hips_z(t: float) -> float:
+	var a: Animation = attack_root[ATTACKS[combo]]
+	var track := a.find_track(NodePath("%s:mixamorig_Hips" % model.get_path_to(skel)), Animation.TYPE_POSITION_3D)
+	return a.position_track_interpolate(track, t).z
+
+
+func _input_dir() -> Vector3:
 	var input := Vector2.ZERO
-	if Input.is_key_pressed(KEY_W) or auto_mode != "": input.y -= 1
+	if Input.is_key_pressed(KEY_W) or auto_mode == "walk" or auto_mode == "run": input.y -= 1
 	if Input.is_key_pressed(KEY_S): input.y += 1
 	if Input.is_key_pressed(KEY_A): input.x -= 1
 	if Input.is_key_pressed(KEY_D): input.x += 1
-	var running := Input.is_key_pressed(KEY_SHIFT) or auto_mode == "run"
+	if not controls_enabled:
+		input = Vector2.ZERO
+	var dir := Basis(Vector3.UP, pivot.rotation.y) * Vector3(input.x, 0, input.y)
+	return dir.normalized() if dir.length() > 0.01 else Vector3.ZERO
 
-	var yaw := Basis(Vector3.UP, pivot.rotation.y)
-	var dir := yaw * Vector3(input.x, 0, input.y)
-	dir = dir.normalized() if dir.length() > 0.01 else Vector3.ZERO
-	var target := dir * (RUN_SPEED if running else WALK_SPEED)
-	velocity.x = move_toward(velocity.x, target.x, ACCEL * delta * maxf(1.0, target.length()))
-	velocity.z = move_toward(velocity.z, target.z, ACCEL * delta * maxf(1.0, target.length()))
+
+func _physics_process(delta: float) -> void:
+	if auto_mode == "attack":
+		attack()
+	if combo >= 0:
+		_update_combo()
+	var running := Input.is_key_pressed(KEY_SHIFT) or auto_mode == "run"
+	var dir := Vector3.ZERO
+	if combo >= 0:
+		# Steering waits for the strike; the clip's own footwork moves her.
+		var step := _root_motion(delta) if ATTACK_TRAVELS[combo] else Vector3.ZERO
+		velocity.x = step.x
+		velocity.z = step.z
+	else:
+		dir = _input_dir()
+		var target := dir * (RUN_SPEED if running else WALK_SPEED)
+		velocity.x = move_toward(velocity.x, target.x, ACCEL * delta * maxf(1.0, target.length()))
+		velocity.z = move_toward(velocity.z, target.z, ACCEL * delta * maxf(1.0, target.length()))
 	if not is_on_floor():
 		velocity += get_gravity() * delta
 	else:
@@ -386,6 +492,8 @@ func _physics_process(delta: float) -> void:
 		var want := atan2(dir.x, dir.z)
 		model.rotation.y = lerp_angle(model.rotation.y, want, 1.0 - exp(-TURN_SPEED * delta))
 
+	if combo >= 0:
+		return
 	var speed := Vector2(velocity.x, velocity.z).length()
 	var next := "idle"
 	if speed > (WALK_SPEED + RUN_SPEED) * 0.5:

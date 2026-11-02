@@ -8,3 +8,6 @@ tools/src/axe_tripo.glb
 tools/src/shield_tripo.glb
 # Raw Tripo leaf warrior (58 MB); tools/build_leaf_warrior.py reads it
 tools/src/warrior_tripo.glb
+# Mixamo clips (Mixamo's terms don't allow sharing the raw files);
+# tools/build_heroine.py reads them
+tools/src/mixamo/

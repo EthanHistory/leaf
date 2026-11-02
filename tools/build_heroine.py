@@ -12,6 +12,10 @@ The Tripo character (tools/src/heroine_tripo.glb) has two flaws this fixes:
   split into its own mesh and given chains of hair bones, which Godot's
   SpringBoneSimulator3D swings (see player.gd).
 
+It also retargets a three-hit attack combo from Mixamo's Sword and Shield pack
+(tools/src/mixamo/, not committed: Mixamo's terms don't allow sharing the raw
+files) onto her skeleton as the actions attack1, attack2 and attack3.
+
 --preview DIR writes renders of the intermediate steps for checking.
 """
 
@@ -22,7 +26,7 @@ import sys
 import bmesh
 import bpy
 import numpy as np
-from mathutils import Vector
+from mathutils import Quaternion, Vector
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 SRC = os.path.join(ROOT, "tools", "src", "heroine_tripo.glb")
@@ -47,6 +51,14 @@ HAIR_ROOT_Z = 0.925
 HAIR_ROOT_BLEND = 0.025  # above the root the hair eases back onto the head bone
 HAIR_MIN_DROP = 0.06
 HAIR_BONES = 4
+
+# Attack combo: action name -> Mixamo clip (30 fps, T-pose rest, 1.8 m tall).
+MIXAMO = os.path.join(ROOT, "tools", "src", "mixamo")
+ATTACKS = {
+    "attack1": "sword and shield slash.fbx",
+    "attack2": "sword and shield slash (3).fbx",
+    "attack3": "sword and shield attack (3).fbx",
+}
 
 args = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
 PREVIEW = args[args.index("--preview") + 1] if "--preview" in args else ""
@@ -371,6 +383,111 @@ def skin_hair(hair, chains):
                 groups[(s, min(i + 1, HAIR_BONES - 1))].add([v.index], share * f, "ADD")
 
 
+# ---------------------------------------------------------------- attacks
+
+def world_rot(obj, m):
+    return (obj.matrix_world @ m).to_3x3().normalized().to_quaternion()
+
+
+def heading(src):
+    """Which way the source's hips face, as an angle around the vertical."""
+    p = src.pose.bones
+    across = src.matrix_world @ p["mixamorig:LeftUpLeg"].head - src.matrix_world @ p["mixamorig:RightUpLeg"].head
+    return math.atan2(across.y, across.x)
+
+
+def retarget(arm, path, name):
+    """Bakes the Mixamo clip at [path] onto [arm] as the action [name].
+
+    The Mixamo rest pose is a T-pose and hers an A-pose, so rest rotations can't
+    be copied across. Each source bone is first swung so it points the way her
+    bone does at rest; the offset left between the two frames is then carried
+    through every frame. Her bones end up pointing the way the source bones do,
+    with the source's twist. The hips' travel is scaled by the hip heights.
+
+    A spin that doesn't come round to where it started (attack (3) turns 396
+    degrees) is unwound evenly over the clip, so she ends facing the way she
+    began and can go straight back to idle.
+    """
+    scene = bpy.context.scene
+    fps = scene.render.fps
+    before = set(bpy.data.objects)
+    actions = set(bpy.data.actions)
+    bpy.ops.import_scene.fbx(filepath=path)
+    src_fps = scene.render.fps
+    scene.render.fps = fps  # the importer switches the scene to the clip's rate
+    src = next(o for o in bpy.data.objects if o not in before and o.type == "ARMATURE")
+    clip = src.animation_data.action
+    f0, f1 = clip.frame_range
+
+    sb, tb = src.data.bones, arm.data.bones
+    bones = [b for b in tb if b.name in sb]  # parents before children
+    offset = {}
+    for b in bones:
+        s = sb[b.name]
+        rs = world_rot(src, s.matrix_local)
+        rt = world_rot(arm, b.matrix_local)
+        ds = (src.matrix_world.to_3x3() @ (s.tail_local - s.head_local)).normalized()
+        dt = (arm.matrix_world.to_3x3() @ (b.tail_local - b.head_local)).normalized()
+        offset[b.name] = (ds.rotation_difference(dt) @ rs).inverted() @ rt
+    hips = "mixamorig:Hips"
+    src_hips = src.matrix_world @ sb[hips].head_local
+    tgt_hips = arm.matrix_world @ tb[hips].head_local
+    scale = tgt_hips.z / src_hips.z
+    arm_rot = arm.matrix_world.to_quaternion().inverted()
+    scene.frame_set(int(f0))
+    start = heading(src)
+    scene.frame_set(int(f1))
+    spin = (heading(src) - start + math.pi) % (2 * math.pi) - math.pi
+
+    act = bpy.data.actions.new(name)
+    act.use_fake_user = True
+    arm.animation_data_create()
+    arm.animation_data.action = act
+    pose = arm.pose.bones
+    for p in pose:
+        p.rotation_mode = "QUATERNION"
+    frames = int(round((f1 - f0) * fps / src_fps))
+    for k in range(frames + 1):
+        t = f0 + k * src_fps / fps
+        scene.frame_set(int(t), subframe=t - int(t))
+        unwind = Quaternion((0, 0, 1), -spin * k / frames)
+        posed = {}  # armature-space rotation of each of her bones this frame
+        for b in tb:
+            local = b.matrix_local.to_quaternion()
+            parent = posed[b.parent.name] if b.parent else None
+            rest = (b.parent.matrix_local.inverted() @ b.matrix_local).to_quaternion() if b.parent else local
+            if b.name in offset:
+                want = arm_rot @ unwind @ world_rot(src, src.pose.bones[b.name].matrix) @ offset[b.name]
+                basis = (parent @ rest).inverted() @ want if parent else local.inverted() @ want
+            else:
+                basis = pose[b.name].rotation_quaternion.copy()
+                basis.identity()
+                want = (parent @ rest if parent else local) @ basis
+            posed[b.name] = want
+            pose[b.name].rotation_quaternion = basis
+            pose[b.name].keyframe_insert("rotation_quaternion", frame=k + 1)
+        travel = (src.matrix_world @ src.pose.bones[hips].head - src_hips) * scale
+        pose[hips].location = tb[hips].matrix_local.to_quaternion().inverted() @ (arm_rot @ travel)
+        pose[hips].keyframe_insert("location", frame=k + 1)
+
+    arm.animation_data.action = None
+    for p in pose:
+        p.rotation_quaternion.identity()
+        p.location = (0, 0, 0)
+    for o in set(bpy.data.objects) - before:
+        bpy.data.objects.remove(o)
+    for a in set(bpy.data.actions) - actions - {act}:
+        bpy.data.actions.remove(a)
+    print("%s: %d frames from %s, unwound %.0f degrees"
+          % (name, frames + 1, os.path.basename(path), math.degrees(spin)))
+
+
+def add_attacks(arm):
+    for name, f in ATTACKS.items():
+        retarget(arm, os.path.join(MIXAMO, f), name)
+
+
 def export(arm):
     arm.data.pose_position = "POSE"
     for o in bpy.context.selected_objects:
@@ -394,6 +511,7 @@ def main():
     print("hair chains:", {chain_name(s, 0)[:-2]: round(j[-1].z, 3) for s, j in chains.items()})
     add_hair_bones(arm, chains)
     skin_hair(hair, chains)
+    add_attacks(arm)
     export(arm)
     print("wrote", OUT)
 

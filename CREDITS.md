@@ -28,6 +28,10 @@
   idle, walk and run clips (tools/src/heroine_tripo.glb). tools/build_heroine.py
   realigns the painted eyes and brows with the sculpt and gives the hair its own
   mesh and spring-bone chains, writing assets/characters/heroine.glb.
+  Her attack combo (attack1-3) is retargeted from Mixamo's Sword and Shield
+  pack ("sword and shield slash", "slash (3)" and "attack (3)",
+  https://www.mixamo.com), used under Adobe's Mixamo terms; the source FBX files
+  go in tools/src/mixamo/ and are not committed.
 - Leafling (깻잎 숲 몬스터): generated and auto-rigged with Tripo
   (tools/src/creature_tripo.glb). tools/build_leafling.py rebuilds its skinning,
   adds eyelid, mouth, leaf, sprout and tail bones and bakes Idle and Walk clips,
